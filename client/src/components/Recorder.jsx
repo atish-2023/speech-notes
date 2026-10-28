@@ -77,6 +77,10 @@ export function Recorder({
 
   const hasAnyText = Boolean((finalTranscript || interimTranscript)?.trim());
 
+  // An attempt is in flight from the moment the mic is requested until idle/error,
+  // so Stop must work even before recording has actually started.
+  const isBusy = isRecording || status === 'requesting' || status === 'connecting' || status === 'recording' || status === 'stopping';
+
   return (
     <div>
       {/* Notice / Error banners */}
@@ -134,8 +138,8 @@ export function Recorder({
             <button
               type="button"
               className={`mic-hero-btn ${isRecording ? 'recording' : ''}`}
-              onClick={isRecording ? stopRecording : startRecording}
-              disabled={status === 'requesting' || status === 'connecting' || status === 'stopping'}
+              onClick={isBusy ? stopRecording : startRecording}
+              disabled={status === 'stopping'}
               aria-label={isRecording ? 'Stop Recording' : 'Start Recording'}
             >
               {isRecording ? (
@@ -180,7 +184,7 @@ export function Recorder({
               type="button"
               className="btn-stop-speaking"
               onClick={stopRecording}
-              disabled={!isRecording && status !== 'recording'}
+              disabled={!isBusy}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="4" y="4" width="16" height="16" rx="2" />

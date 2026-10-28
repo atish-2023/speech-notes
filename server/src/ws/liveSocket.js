@@ -7,6 +7,20 @@ const MAX_SESSION_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 let activeSessionCount = 0;
 
 /**
+ * Turns a Gemini/live SDK error into a client-safe message. Never includes the
+ * API key. Detects authentication/permission failures so the user sees a clear
+ * "key was rejected" hint instead of a raw SDK dump.
+ */
+function describeGeminiError(err) {
+  const raw = (err && (err.message || err.status || String(err))) || 'Unknown Gemini Live error';
+  const authFailure = /api[\s_-]?key|permission|unauthenticated|unauthorized|invalid authentication|forbidden|401|403/i.test(raw);
+  if (authFailure) {
+    return 'Gemini rejected the request: the GEMINI_API_KEY was refused (authentication/permission error). Verify the key in server/.env.';
+  }
+  return raw;
+}
+
+/**
  * Validates the WebSocket request origin.
  * Enforcement is limited to production: in development any origin is allowed so
  * testing from localhost and other devices on the local network keeps working.
@@ -109,6 +123,7 @@ export function setupLiveSocket(server) {
 
         if (data.type === 'start') {
           if (!process.env.GEMINI_API_KEY) {
+            console.error('Cannot start live session: GEMINI_API_KEY is not set on the server.');
             sendJson({
               type: 'error',
               message: 'GEMINI_API_KEY is missing on the server. Please check your environment variables.'
@@ -129,10 +144,10 @@ export function setupLiveSocket(server) {
           });
 
           speechService.onError((err) => {
-            console.error('Speech service error:', err.message || err);
+            console.error('Gemini live session error:', err.message || err);
             sendJson({
               type: 'error',
-              message: err.message || 'Speech recognition encountered an error.'
+              message: describeGeminiError(err)
             });
           });
 
@@ -157,10 +172,10 @@ export function setupLiveSocket(server) {
               cleanup();
             }, MAX_SESSION_DURATION_MS);
           } catch (err) {
-            console.error('Failed to establish live session:', err.message);
+            console.error('Failed to establish Gemini live session:', err.message || err);
             sendJson({
               type: 'error',
-              message: err.message || 'Failed to start Gemini Live transcription session.'
+              message: describeGeminiError(err)
             });
             cleanup();
           }

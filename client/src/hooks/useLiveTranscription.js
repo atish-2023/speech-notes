@@ -53,6 +53,11 @@ class PCMWorkletProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-worklet-processor', PCMWorkletProcessor);
 `;
 
+// Max time to wait for the browser to hand back a microphone stream. If it
+// neither resolves nor rejects within this window we surface an error and let
+// the user retry, instead of leaving the UI stuck on "Requesting Mic...".
+const GET_USER_MEDIA_TIMEOUT_MS = 12000;
+
 // Resolve the transcription WebSocket URL from env / build mode / page origin.
 function getWebSocketUrl() {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
@@ -107,6 +112,9 @@ export function useLiveTranscription() {
   const timerRef = useRef(null);
   const webSpeechRecognitionRef = useRef(null);
   const isRecordingRef = useRef(false);
+  const cancelledRef = useRef(false); // true while stopping: discards late async results
+  const connectTimeoutRef = useRef(null); // WS "did Gemini confirm?" guard
+  const finalizeTimeoutRef = useRef(null); // short flush window after Stop
 
   useEffect(() => {
     isRecordingRef.current = isRecording;
@@ -115,10 +123,16 @@ export function useLiveTranscription() {
   // Release every media/websocket resource when the hook unmounts.
   useEffect(() => {
     return () => {
+      cancelledRef.current = true;
       if (timerRef.current) clearInterval(timerRef.current);
+      if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+      if (finalizeTimeoutRef.current) clearTimeout(finalizeTimeoutRef.current);
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (webSpeechRecognitionRef.current) {
         try { webSpeechRecognitionRef.current.abort(); } catch {}
+      }
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch {}
       }
     };
   }, []);
@@ -137,7 +151,7 @@ export function useLiveTranscription() {
     setDuration(12);
   }
 
-  // Tear down every timer, animation, audio node and media track.
+  // Tear down every timer, animation, audio node, media track and socket.
   function stopTracksAndAudio() {
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -149,6 +163,11 @@ export function useLiveTranscription() {
       animFrameRef.current = null;
     }
     setAudioLevel(0);
+
+    if (connectTimeoutRef.current) {
+      clearTimeout(connectTimeoutRef.current);
+      connectTimeoutRef.current = null;
+    }
 
     if (workletNodeRef.current) {
       try { workletNodeRef.current.disconnect(); } catch {}
@@ -179,39 +198,57 @@ export function useLiveTranscription() {
       try { webSpeechRecognitionRef.current.stop(); } catch {}
       webSpeechRecognitionRef.current = null;
     }
+
+    // Close the socket last so the server receives the explicit stop above.
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch {}
+      wsRef.current = null;
+    }
   }
 
+  function resetToIdle() {
+    if (finalizeTimeoutRef.current) {
+      clearTimeout(finalizeTimeoutRef.current);
+      finalizeTimeoutRef.current = null;
+    }
+    setInterimTranscript('');
+    setIsRecording(false);
+    setStatus('idle');
+    setStatusMessage('Microphone ready');
+  }
+
+  // Stop must work in EVERY state, including while the mic is still being
+  // requested or the socket is still connecting.
   function stopRecording() {
-    setStatus('stopping');
-    setStatusMessage('Stopping recording and finalizing transcript...');
+    cancelledRef.current = true;
+
+    // Ask the backend to flush the final transcript before we tear the socket down.
+    const ws = wsRef.current;
+    const wsOpen = ws && ws.readyState === WebSocket.OPEN;
+    if (wsOpen) {
+      try {
+        ws.send(JSON.stringify({ type: 'stop' }));
+      } catch {}
+    }
+
     stopTracksAndAudio();
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try {
-        wsRef.current.send(JSON.stringify({ type: 'stop' }));
-      } catch {}
-
-      // Give the backend a moment to flush the final transcript, then reset.
-      setTimeout(() => {
-        if (wsRef.current) {
-          try { wsRef.current.close(); } catch {}
-          wsRef.current = null;
-        }
-        setInterimTranscript('');
-        setIsRecording(false);
-        setStatus('idle');
-        setStatusMessage('Microphone ready');
-      }, 400);
+    if (wsOpen) {
+      // Give the backend a moment to flush any final transcript, then reset.
+      if (finalizeTimeoutRef.current) clearTimeout(finalizeTimeoutRef.current);
+      setStatus('stopping');
+      setStatusMessage('Stopping recording and finalizing transcript...');
+      finalizeTimeoutRef.current = setTimeout(resetToIdle, 400);
     } else {
-      setInterimTranscript('');
-      setIsRecording(false);
-      setStatus('idle');
-      setStatusMessage('Microphone ready');
+      resetToIdle();
     }
   }
 
   // Browser Web Speech API fallback when the Gemini Live API is unreachable.
   function startWebSpeechFallback(stream) {
+    // Ignore a late fallback trigger from a socket the user already stopped.
+    if (cancelledRef.current) return;
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       setError('Gemini Live API is unreachable and this browser does not support Web Speech API. Please use Google Chrome or Edge.');
@@ -255,7 +292,7 @@ export function useLiveTranscription() {
       };
 
       recognition.onend = () => {
-        if (isRecordingRef.current) {
+        if (isRecordingRef.current && !cancelledRef.current) {
           try { recognition.start(); } catch {}
         }
       };
@@ -292,6 +329,13 @@ export function useLiveTranscription() {
 
     if (audioCtx.state === 'suspended') {
       await audioCtx.resume();
+    }
+
+    // If the user pressed Stop while we were awaiting resume(), abandon cleanly.
+    if (cancelledRef.current || wsRef.current !== ws) {
+      try { audioCtx.close(); } catch {}
+      audioContextRef.current = null;
+      return;
     }
 
     const source = audioCtx.createMediaStreamSource(stream);
@@ -402,17 +446,24 @@ export function useLiveTranscription() {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
-      // Timeout guard: if neither Gemini Live nor error responds in 8s, fallback to Web Speech
-      const connectTimeout = setTimeout(() => {
-        if (!connectionConfirmed) {
-          console.warn('Gemini Live session start timed out. Switching to Web Speech fallback...');
-          try { ws.close(); } catch {}
-          startWebSpeechFallback(stream);
-        }
+      // This socket's events are only valid while it is the "current" socket and
+      // the user has not pressed Stop. That guard prevents a closed/stale socket
+      // (or a stopped session) from firing a fallback or a UI reset.
+      const isStale = () => cancelledRef.current || wsRef.current !== ws;
+
+      // Timeout guard: if neither Gemini Live confirms nor an error arrives in 8s,
+      // fall back to Web Speech so the UI never hangs on "connecting".
+      connectTimeoutRef.current = setTimeout(() => {
+        connectTimeoutRef.current = null;
+        if (isStale() || connectionConfirmed) return;
+        console.warn('Gemini Live session start timed out. Switching to Web Speech fallback...');
+        try { ws.close(); } catch {}
+        startWebSpeechFallback(stream);
       }, 8000);
 
       ws.onopen = () => {
-        setStatusMessage('WebSocket opened. Initializing gemini-3.5-transcribe-live...');
+        if (isStale()) return;
+        setStatusMessage('WebSocket opened. Initializing live transcription...');
         ws.send(JSON.stringify({
           type: 'start',
           language: language
@@ -420,6 +471,7 @@ export function useLiveTranscription() {
       };
 
       ws.onmessage = async (event) => {
+        if (isStale()) return;
         try {
           const data = JSON.parse(event.data);
 
@@ -428,10 +480,13 @@ export function useLiveTranscription() {
               setStatusMessage('Establishing live bidirectional streaming session with Gemini...');
             } else if (data.status === 'recording') {
               connectionConfirmed = true;
-              clearTimeout(connectTimeout);
+              if (connectTimeoutRef.current) {
+                clearTimeout(connectTimeoutRef.current);
+                connectTimeoutRef.current = null;
+              }
 
               setStatus('recording');
-              setStatusMessage(`Live stream active (${data.model || 'gemini-3.5-transcribe-live'}) — speak now!`);
+              setStatusMessage(`Live stream active (${data.model || 'Gemini Live'}) — speak now!`);
               setEngine('gemini');
 
               // Set up AudioContext with robust fallback
@@ -439,7 +494,7 @@ export function useLiveTranscription() {
                 await buildAudioPipeline(stream, ws);
               } catch (audioErr) {
                 console.error('Audio capture pipeline failed, switching to Web Speech fallback:', audioErr);
-                try { ws.close(); } catch {}
+                if (isStale()) return;
                 startWebSpeechFallback(stream);
               }
             } else if (data.status === 'stopped') {
@@ -463,7 +518,10 @@ export function useLiveTranscription() {
           } else if (data.type === 'error') {
             console.warn('Backend speech error:', data.message);
             if (!connectionConfirmed) {
-              clearTimeout(connectTimeout);
+              if (connectTimeoutRef.current) {
+                clearTimeout(connectTimeoutRef.current);
+                connectTimeoutRef.current = null;
+              }
               try { ws.close(); } catch {}
               startWebSpeechFallback(stream);
             } else {
@@ -477,8 +535,12 @@ export function useLiveTranscription() {
 
       ws.onerror = (e) => {
         console.warn('WebSocket error:', e);
+        if (isStale()) return;
         if (!connectionConfirmed) {
-          clearTimeout(connectTimeout);
+          if (connectTimeoutRef.current) {
+            clearTimeout(connectTimeoutRef.current);
+            connectTimeoutRef.current = null;
+          }
           try { ws.close(); } catch {}
           startWebSpeechFallback(stream);
         } else {
@@ -489,8 +551,13 @@ export function useLiveTranscription() {
       };
 
       ws.onclose = () => {
+        // A stop/cancel tears the socket down deliberately; ignore its close event.
+        if (cancelledRef.current || wsRef.current !== ws) return;
         if (!connectionConfirmed) {
-          clearTimeout(connectTimeout);
+          if (connectTimeoutRef.current) {
+            clearTimeout(connectTimeoutRef.current);
+            connectTimeoutRef.current = null;
+          }
           startWebSpeechFallback(stream);
         } else {
           setIsRecording(false);
@@ -505,8 +572,54 @@ export function useLiveTranscription() {
     }
   }
 
-  // Main Start Recording: Connects to backend WebSocket and initiates Gemini Live
+  // Request the mic with a hard timeout so a hung getUserMedia can't leave the UI
+  // stuck. If the stream arrives after we've given up or the user stopped, its
+  // tracks are stopped immediately and the result is discarded.
+  function requestMicrophone() {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error('Microphone request timed out. Press Stop and try again.'));
+        }
+      }, GET_USER_MEDIA_TIMEOUT_MS);
+
+      navigator.mediaDevices
+        .getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        })
+        .then((stream) => {
+          // Late or cancelled result: discard it so the mic light turns off.
+          if (settled || cancelledRef.current) {
+            try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+            }
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          resolve(stream);
+        })
+        .catch((err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  }
+
+  // Main Start Recording: requests the mic, then connects the backend WebSocket.
   async function startRecording() {
+    cancelledRef.current = false; // begin a fresh attempt
     setError(null);
     setEngineNotice('');
     setInterimTranscript('');
@@ -524,25 +637,27 @@ export function useLiveTranscription() {
 
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-      mediaStreamRef.current = stream;
+      stream = await requestMicrophone();
     } catch (err) {
-      const errMsg = getUserMediaErrorMessage(err);
+      // User pressed Stop while we were requesting, or the request failed/timed out.
+      if (cancelledRef.current) return;
+      const errMsg = err && err.name ? getUserMediaErrorMessage(err) : (err.message || 'Failed to access microphone.');
       setError(errMsg);
       setStatus('error');
       setStatusMessage(errMsg);
       return;
     }
 
+    // Stop may have been pressed in the instant between resolve and here.
+    if (cancelledRef.current) {
+      try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+      return;
+    }
+
+    mediaStreamRef.current = stream;
+
     setStatus('connecting');
-    setStatusMessage('Connecting to backend Gemini Live WebSocket relay...');
+    setStatusMessage('Connecting to backend live transcription relay...');
     connectTranscriptionSocket(stream);
   }
 
