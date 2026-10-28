@@ -6,9 +6,23 @@ import { getDbStatus } from './db/pool.js';
 
 const app = express();
 
-const clientUrl = process.env.CLIENT_URL || '*';
+const clientUrl = process.env.CLIENT_URL;
+const isProduction = process.env.NODE_ENV === 'production';
+
+// CORS origins:
+// - Production: ONLY the configured CLIENT_URL (fail closed if it is missing),
+//   so random sites cannot call the API with credentials.
+// - Development: CLIENT_URL (if set) plus any origin, so testing from other
+//   localhost ports or a phone on the local network keeps working.
+let corsOrigin;
+if (isProduction) {
+  corsOrigin = clientUrl || false;
+} else {
+  corsOrigin = clientUrl ? [clientUrl, 'http://localhost:5173', 'http://localhost:3000'] : true;
+}
+
 app.use(cors({
-  origin: clientUrl === '*' ? true : [clientUrl, 'http://localhost:5173', 'http://localhost:3000'],
+  origin: corsOrigin,
   credentials: true
 }));
 

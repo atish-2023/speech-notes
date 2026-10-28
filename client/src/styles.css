@@ -446,6 +446,10 @@ textarea {
   animation: pulse 1.5s infinite;
 }
 
+.status-dot.warning {
+  background-color: #f59e0b;
+}
+
 @keyframes pulse {
   0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
   70% { transform: scale(1.15); box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }

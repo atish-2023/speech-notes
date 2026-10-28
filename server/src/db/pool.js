@@ -71,7 +71,7 @@ async function ensureSchema() {
     `);
     console.log('PostgreSQL transcripts schema verified and ready.');
   } catch (schemaErr) {
-    console.warn('Schema auto-verification note:', schemaErr.message);
+    console.error('PostgreSQL schema auto-verification FAILED:', schemaErr.message);
   }
 }
 

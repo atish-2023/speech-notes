@@ -126,7 +126,13 @@ export async function createTranscript(req, res, next) {
     }
 
     const cleanLanguage = typeof language === 'string' && language.trim() !== '' ? language.trim().slice(0, 50) : 'auto';
-    const duration = Math.max(0, parseInt(duration_seconds, 10) || 0);
+
+    // duration_seconds is optional (defaults to 0). When present it must be an
+    // integer within [0, 3600], matching the DB CHECK and the 5-minute session cap.
+    const duration = Number(duration_seconds);
+    if (!Number.isInteger(duration) || duration < 0 || duration > 3600) {
+      return res.status(400).json({ error: 'duration_seconds must be an integer between 0 and 3600.' });
+    }
 
     const sql = `
       INSERT INTO transcripts (title, content, language, duration_seconds)

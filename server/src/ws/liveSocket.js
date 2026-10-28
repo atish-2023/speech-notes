@@ -7,34 +7,30 @@ const MAX_SESSION_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 let activeSessionCount = 0;
 
 /**
- * Validates request origin against allowed client origins.
+ * Validates the WebSocket request origin.
+ * Enforcement is limited to production: in development any origin is allowed so
+ * testing from localhost and other devices on the local network keeps working.
  */
 function isOriginAllowed(origin) {
-  if (!origin || origin === 'null') return true; // Direct/same-origin or iframe connections
-  const clientUrl = process.env.CLIENT_URL;
-  if (!clientUrl || clientUrl === '*') return true;
+  // Development (and any non-production run): allow every origin.
+  if (process.env.NODE_ENV !== 'production') return true;
 
-  // Allow local dev origins & AI studio dev preview & Cloud Run
-  if (
-    origin.startsWith('http://localhost:') ||
-    origin.startsWith('https://localhost:') ||
-    origin.includes('.run.app') ||
-    origin.includes('.google.com') ||
-    origin.includes('.googleusercontent.com') ||
-    origin.includes('ais-') ||
-    origin.includes('webcontainer')
-  ) {
-    return true;
-  }
+  // Direct / same-origin / non-browser upgrades send no (or a "null") Origin.
+  if (!origin || origin === 'null') return true;
+
+  const clientUrl = process.env.CLIENT_URL;
+
+  // Explicit wildcard keeps the previous allow-everyone behavior.
+  if (clientUrl === '*') return true;
+
+  // Production without a configured CLIENT_URL fails closed.
+  if (!clientUrl) return false;
 
   try {
-    const allowedOrigin = new URL(clientUrl).origin;
-    if (origin === allowedOrigin) return true;
+    return origin === new URL(clientUrl).origin;
   } catch {
-    // fallback
+    return false;
   }
-
-  return true;
 }
 
 /**
