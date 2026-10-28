@@ -53,6 +53,339 @@ class PCMWorkletProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-worklet-processor', PCMWorkletProcessor);
 `;
 
+// ---------------------------------------------------------------------------
+// Module-level helpers (plain functions, no React state of their own). They
+// are passed every ref/setter they need so the hook keeps a single source of
+// truth. Behavior is identical to the inline code they were extracted from.
+// ---------------------------------------------------------------------------
+
+// Resolve the transcription WebSocket URL from env / build mode / page origin.
+function getWebSocketUrl() {
+  let wsUrl = import.meta.env.VITE_WS_URL;
+  if (!wsUrl) {
+    if (import.meta.env.DEV) {
+      wsUrl = 'ws://localhost:5000/ws/transcribe';
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${protocol}//${window.location.host}/ws/transcribe`;
+    }
+  }
+  return wsUrl;
+}
+
+// Map a getUserMedia DOMException name to the user-facing message.
+function getUserMediaErrorMessage(err) {
+  if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+    return 'Microphone permission was denied. Please allow microphone access in your browser settings.';
+  }
+  if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+    return 'No microphone device was detected on your computer.';
+  }
+  if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+    return 'Microphone is currently in use by another application.';
+  }
+  return 'Failed to access microphone.';
+}
+
+// Request the mono, echo-cancelled microphone stream and track it in a ref.
+async function openMediaStream(mediaStreamRef) {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    }
+  });
+  mediaStreamRef.current = stream;
+  return stream;
+}
+
+// Shared 1-second elapsed timer used by both the Gemini and Web Speech paths.
+function runDurationTimer(timerRef, setDuration) {
+  setDuration(0);
+  if (timerRef.current) clearInterval(timerRef.current);
+  timerRef.current = setInterval(() => {
+    setDuration((prev) => prev + 1);
+  }, 1000);
+}
+
+// Build the capture pipeline (AnalyserNode for level metering + AudioWorklet
+// with a ScriptProcessor fallback) that streams 16-bit PCM to the WebSocket.
+// Throws on failure so the caller can switch to the Web Speech fallback.
+async function buildAudioPipeline({
+  stream,
+  ws,
+  audioContextRef,
+  analyserRef,
+  workletNodeRef,
+  scriptProcessorRef,
+  animFrameRef,
+  timerRef,
+  isRecordingRef,
+  setAudioLevel,
+  setDuration,
+  setIsRecording
+}) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  let audioCtx;
+  try {
+    audioCtx = new AudioContextClass({ sampleRate: 16000 });
+  } catch {
+    audioCtx = new AudioContextClass();
+  }
+  audioContextRef.current = audioCtx;
+
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+  }
+
+  const source = audioCtx.createMediaStreamSource(stream);
+
+  // AnalyserNode for live visual volume level.
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
+  analyserRef.current = analyser;
+
+  const dataArray = new Uint8Array(analyser.frequencyBinCount);
+  const updateVolume = () => {
+    if (!isRecordingRef.current) return;
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      sum += dataArray[i];
+    }
+    const avg = sum / dataArray.length;
+    setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
+    animFrameRef.current = requestAnimationFrame(updateVolume);
+  };
+  animFrameRef.current = requestAnimationFrame(updateVolume);
+
+  // Attempt AudioWorklet using inlined Blob.
+  let workletSuccess = false;
+  if (audioCtx.audioWorklet) {
+    try {
+      const blob = new Blob([WORKLET_PROCESSOR_CODE], { type: 'application/javascript' });
+      const blobUrl = URL.createObjectURL(blob);
+      await audioCtx.audioWorklet.addModule(blobUrl);
+      URL.revokeObjectURL(blobUrl);
+
+      const workletNode = new AudioWorkletNode(audioCtx, 'pcm-worklet-processor');
+      workletNodeRef.current = workletNode;
+
+      workletNode.port.onmessage = (audioEvent) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(audioEvent.data);
+        }
+      };
+
+      source.connect(workletNode);
+      workletSuccess = true;
+    } catch (workletErr) {
+      console.warn('AudioWorklet inline failed, falling back to ScriptProcessor:', workletErr);
+    }
+  }
+
+  // ScriptProcessor fallback for 100% browser compatibility.
+  if (!workletSuccess) {
+    const bufferSize = 4096;
+    const scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+    scriptProcessorRef.current = scriptNode;
+
+    scriptNode.onaudioprocess = (audioProcessingEvent) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const inputBuffer = audioProcessingEvent.inputBuffer;
+      const channelData = inputBuffer.getChannelData(0);
+
+      // Downsample to 16,000 Hz if needed.
+      const currentSampleRate = audioCtx.sampleRate;
+      const targetSampleRate = 16000;
+      let downsampled;
+
+      if (currentSampleRate === targetSampleRate) {
+        downsampled = channelData;
+      } else {
+        const ratio = currentSampleRate / targetSampleRate;
+        const newLength = Math.floor(channelData.length / ratio);
+        downsampled = new Float32Array(newLength);
+        for (let i = 0; i < newLength; i++) {
+          const originalIndex = i * ratio;
+          const low = Math.floor(originalIndex);
+          const high = Math.min(channelData.length - 1, Math.ceil(originalIndex));
+          const fraction = originalIndex - low;
+          downsampled[i] = channelData[low] * (1 - fraction) + channelData[high] * fraction;
+        }
+      }
+
+      // Convert to 16-bit PCM Int16Array.
+      const pcm16 = new Int16Array(downsampled.length);
+      for (let i = 0; i < downsampled.length; i++) {
+        const s = Math.max(-1, Math.min(1, downsampled[i]));
+        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+
+      ws.send(pcm16.buffer);
+    };
+
+    source.connect(scriptNode);
+    scriptNode.connect(audioCtx.destination);
+  }
+
+  // Start duration timer and flip UI into recording state.
+  runDurationTimer(timerRef, setDuration);
+  setIsRecording(true);
+}
+
+// Open the backend WebSocket, wire up the transcript/status handlers and drive
+// the Gemini audio pipeline. Any pre-confirmation failure routes to the
+// Web Speech fallback (startWebSpeechFallback) so recording still works.
+function connectTranscriptionSocket({
+  stream,
+  wsRef,
+  language,
+  audioContextRef,
+  analyserRef,
+  workletNodeRef,
+  scriptProcessorRef,
+  animFrameRef,
+  timerRef,
+  isRecordingRef,
+  setStatus,
+  setStatusMessage,
+  setEngine,
+  setInterimTranscript,
+  setFinalTranscript,
+  setAudioLevel,
+  setDuration,
+  setIsRecording,
+  setError,
+  startWebSpeechFallback,
+  stopTracksAndAudio
+}) {
+  const wsUrl = getWebSocketUrl();
+  let connectionConfirmed = false;
+
+  try {
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    // Timeout guard: if neither Gemini Live nor error responds in 8s, fallback to Web Speech
+    const connectTimeout = setTimeout(() => {
+      if (!connectionConfirmed) {
+        console.warn('Gemini Live session start timed out. Switching to Web Speech fallback...');
+        try { ws.close(); } catch {}
+        startWebSpeechFallback(stream);
+      }
+    }, 8000);
+
+    ws.onopen = () => {
+      setStatusMessage('WebSocket opened. Initializing gemini-3.5-transcribe-live...');
+      ws.send(JSON.stringify({
+        type: 'start',
+        language: language
+      }));
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'status') {
+          if (data.status === 'connecting') {
+            setStatusMessage('Establishing live bidirectional streaming session with Gemini...');
+          } else if (data.status === 'recording') {
+            connectionConfirmed = true;
+            clearTimeout(connectTimeout);
+
+            setStatus('recording');
+            setStatusMessage(`Live stream active (${data.model || 'gemini-3.5-transcribe-live'}) — speak now!`);
+            setEngine('gemini');
+
+            // Set up AudioContext with robust fallback
+            try {
+              await buildAudioPipeline({
+                stream,
+                ws,
+                audioContextRef,
+                analyserRef,
+                workletNodeRef,
+                scriptProcessorRef,
+                animFrameRef,
+                timerRef,
+                isRecordingRef,
+                setAudioLevel,
+                setDuration,
+                setIsRecording
+              });
+            } catch (audioErr) {
+              console.error('Audio capture pipeline failed, switching to Web Speech fallback:', audioErr);
+              try { ws.close(); } catch {}
+              startWebSpeechFallback(stream);
+            }
+          } else if (data.status === 'stopped') {
+            setStatus('idle');
+            setStatusMessage('Microphone ready');
+            setIsRecording(false);
+          }
+        } else if (data.type === 'interim') {
+          if (data.text) {
+            setInterimTranscript(data.text);
+          }
+        } else if (data.type === 'final') {
+          if (data.text) {
+            setFinalTranscript((prev) => {
+              const trimmed = data.text.trim();
+              if (!trimmed) return prev;
+              return prev ? `${prev} ${trimmed}` : trimmed;
+            });
+            setInterimTranscript('');
+          }
+        } else if (data.type === 'error') {
+          console.warn('Backend speech error:', data.message);
+          if (!connectionConfirmed) {
+            clearTimeout(connectTimeout);
+            try { ws.close(); } catch {}
+            startWebSpeechFallback(stream);
+          } else {
+            setError(data.message || 'Speech recognition encountered an error.');
+          }
+        }
+      } catch (parseErr) {
+        console.warn('Error reading WebSocket message:', parseErr);
+      }
+    };
+
+    ws.onerror = (e) => {
+      console.warn('WebSocket error:', e);
+      if (!connectionConfirmed) {
+        clearTimeout(connectTimeout);
+        try { ws.close(); } catch {}
+        startWebSpeechFallback(stream);
+      } else {
+        setError('WebSocket connection error during live streaming.');
+        setStatus('error');
+        stopTracksAndAudio();
+      }
+    };
+
+    ws.onclose = () => {
+      if (!connectionConfirmed) {
+        clearTimeout(connectTimeout);
+        startWebSpeechFallback(stream);
+      } else {
+        setIsRecording(false);
+        setStatus('idle');
+        setStatusMessage('Microphone ready');
+        stopTracksAndAudio();
+      }
+    };
+  } catch (wsErr) {
+    console.warn('Failed to open WebSocket, starting Web Speech fallback:', wsErr);
+    startWebSpeechFallback(stream);
+  }
+}
+
 export function useLiveTranscription() {
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState('idle'); // 'idle' | 'requesting' | 'connecting' | 'recording' | 'stopping' | 'error'
@@ -235,12 +568,8 @@ export function useLiveTranscription() {
       setStatusMessage('Listening via Web Speech API fallback — speak now!');
       setIsRecording(true);
 
-      // Duration timer
-      setDuration(0);
-      if (timerRef.current) clearInterval(timerRef.current);
-      timerRef.current = setInterval(() => {
-        setDuration((prev) => prev + 1);
-      }, 1000);
+      // Duration timer (shared with the Gemini path)
+      runDurationTimer(timerRef, setDuration);
     } catch (fallbackErr) {
       setError(`Fallback failed: ${fallbackErr.message}`);
       setStatus('error');
@@ -270,24 +599,9 @@ export function useLiveTranscription() {
 
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-      mediaStreamRef.current = stream;
+      stream = await openMediaStream(mediaStreamRef);
     } catch (err) {
-      let errMsg = 'Failed to access microphone.';
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        errMsg = 'Microphone permission was denied. Please allow microphone access in your browser settings.';
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        errMsg = 'No microphone device was detected on your computer.';
-      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-        errMsg = 'Microphone is currently in use by another application.';
-      }
+      const errMsg = getUserMediaErrorMessage(err);
       setError(errMsg);
       setStatus('error');
       setStatusMessage(errMsg);
@@ -297,234 +611,29 @@ export function useLiveTranscription() {
     setStatus('connecting');
     setStatusMessage('Connecting to backend Gemini Live WebSocket relay...');
 
-    let wsUrl = import.meta.env.VITE_WS_URL;
-    if (!wsUrl) {
-      if (import.meta.env.DEV) {
-        wsUrl = 'ws://localhost:5000/ws/transcribe';
-      } else {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl = `${protocol}//${window.location.host}/ws/transcribe`;
-      }
-    }
-
-    let connectionConfirmed = false;
-
-    try {
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      // Timeout guard: if neither Gemini Live nor error responds in 8s, fallback to Web Speech
-      const connectTimeout = setTimeout(() => {
-        if (!connectionConfirmed) {
-          console.warn('Gemini Live session start timed out. Switching to Web Speech fallback...');
-          try { ws.close(); } catch {}
-          startWebSpeechFallback(stream);
-        }
-      }, 8000);
-
-      ws.onopen = () => {
-        setStatusMessage('WebSocket opened. Initializing gemini-3.5-transcribe-live...');
-        ws.send(JSON.stringify({
-          type: 'start',
-          language: language
-        }));
-      };
-
-      ws.onmessage = async (event) => {
-        try {
-          const data = JSON.parse(event.data);
-
-          if (data.type === 'status') {
-            if (data.status === 'connecting') {
-              setStatusMessage('Establishing live bidirectional streaming session with Gemini...');
-            } else if (data.status === 'recording') {
-              connectionConfirmed = true;
-              clearTimeout(connectTimeout);
-
-              setStatus('recording');
-              setStatusMessage(`Live stream active (${data.model || 'gemini-3.5-transcribe-live'}) — speak now!`);
-              setEngine('gemini');
-
-              // Set up AudioContext with robust fallback
-              try {
-                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-                let audioCtx;
-                try {
-                  audioCtx = new AudioContextClass({ sampleRate: 16000 });
-                } catch {
-                  audioCtx = new AudioContextClass();
-                }
-                audioContextRef.current = audioCtx;
-
-                if (audioCtx.state === 'suspended') {
-                  await audioCtx.resume();
-                }
-
-                const source = audioCtx.createMediaStreamSource(stream);
-
-                // Set up AnalyserNode for live visual volume level
-                const analyser = audioCtx.createAnalyser();
-                analyser.fftSize = 256;
-                source.connect(analyser);
-                analyserRef.current = analyser;
-
-                const dataArray = new Uint8Array(analyser.frequencyBinCount);
-                const updateVolume = () => {
-                  if (!isRecordingRef.current) return;
-                  analyser.getByteFrequencyData(dataArray);
-                  let sum = 0;
-                  for (let i = 0; i < dataArray.length; i++) {
-                    sum += dataArray[i];
-                  }
-                  const avg = sum / dataArray.length;
-                  setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
-                  animFrameRef.current = requestAnimationFrame(updateVolume);
-                };
-                animFrameRef.current = requestAnimationFrame(updateVolume);
-
-                // Attempt AudioWorklet using inlined Blob
-                let workletSuccess = false;
-                if (audioCtx.audioWorklet) {
-                  try {
-                    const blob = new Blob([WORKLET_PROCESSOR_CODE], { type: 'application/javascript' });
-                    const blobUrl = URL.createObjectURL(blob);
-                    await audioCtx.audioWorklet.addModule(blobUrl);
-                    URL.revokeObjectURL(blobUrl);
-
-                    const workletNode = new AudioWorkletNode(audioCtx, 'pcm-worklet-processor');
-                    workletNodeRef.current = workletNode;
-
-                    workletNode.port.onmessage = (audioEvent) => {
-                      if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(audioEvent.data);
-                      }
-                    };
-
-                    source.connect(workletNode);
-                    workletSuccess = true;
-                  } catch (workletErr) {
-                    console.warn('AudioWorklet inline failed, falling back to ScriptProcessor:', workletErr);
-                  }
-                }
-
-                // ScriptProcessor fallback for 100% browser compatibility
-                if (!workletSuccess) {
-                  const bufferSize = 4096;
-                  const scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
-                  scriptProcessorRef.current = scriptNode;
-
-                  scriptNode.onaudioprocess = (audioProcessingEvent) => {
-                    if (ws.readyState !== WebSocket.OPEN) return;
-                    const inputBuffer = audioProcessingEvent.inputBuffer;
-                    const channelData = inputBuffer.getChannelData(0);
-
-                    // Downsample to 16,000 Hz if needed
-                    const currentSampleRate = audioCtx.sampleRate;
-                    const targetSampleRate = 16000;
-                    let downsampled;
-
-                    if (currentSampleRate === targetSampleRate) {
-                      downsampled = channelData;
-                    } else {
-                      const ratio = currentSampleRate / targetSampleRate;
-                      const newLength = Math.floor(channelData.length / ratio);
-                      downsampled = new Float32Array(newLength);
-                      for (let i = 0; i < newLength; i++) {
-                        const originalIndex = i * ratio;
-                        const low = Math.floor(originalIndex);
-                        const high = Math.min(channelData.length - 1, Math.ceil(originalIndex));
-                        const fraction = originalIndex - low;
-                        downsampled[i] = channelData[low] * (1 - fraction) + channelData[high] * fraction;
-                      }
-                    }
-
-                    // Convert to 16-bit PCM Int16Array
-                    const pcm16 = new Int16Array(downsampled.length);
-                    for (let i = 0; i < downsampled.length; i++) {
-                      const s = Math.max(-1, Math.min(1, downsampled[i]));
-                      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                    }
-
-                    ws.send(pcm16.buffer);
-                  };
-
-                  source.connect(scriptNode);
-                  scriptNode.connect(audioCtx.destination);
-                }
-
-                // Start duration timer
-                setDuration(0);
-                if (timerRef.current) clearInterval(timerRef.current);
-                timerRef.current = setInterval(() => {
-                  setDuration((prev) => prev + 1);
-                }, 1000);
-                setIsRecording(true);
-              } catch (audioErr) {
-                console.error('Audio capture pipeline failed, switching to Web Speech fallback:', audioErr);
-                try { ws.close(); } catch {}
-                startWebSpeechFallback(stream);
-              }
-            } else if (data.status === 'stopped') {
-              setStatus('idle');
-              setStatusMessage('Microphone ready');
-              setIsRecording(false);
-            }
-          } else if (data.type === 'interim') {
-            if (data.text) {
-              setInterimTranscript(data.text);
-            }
-          } else if (data.type === 'final') {
-            if (data.text) {
-              setFinalTranscript((prev) => {
-                const trimmed = data.text.trim();
-                if (!trimmed) return prev;
-                return prev ? `${prev} ${trimmed}` : trimmed;
-              });
-              setInterimTranscript('');
-            }
-          } else if (data.type === 'error') {
-            console.warn('Backend speech error:', data.message);
-            if (!connectionConfirmed) {
-              clearTimeout(connectTimeout);
-              try { ws.close(); } catch {}
-              startWebSpeechFallback(stream);
-            } else {
-              setError(data.message || 'Speech recognition encountered an error.');
-            }
-          }
-        } catch (parseErr) {
-          console.warn('Error reading WebSocket message:', parseErr);
-        }
-      };
-
-      ws.onerror = (e) => {
-        console.warn('WebSocket error:', e);
-        if (!connectionConfirmed) {
-          clearTimeout(connectTimeout);
-          try { ws.close(); } catch {}
-          startWebSpeechFallback(stream);
-        } else {
-          setError('WebSocket connection error during live streaming.');
-          setStatus('error');
-          stopTracksAndAudio();
-        }
-      };
-
-      ws.onclose = () => {
-        if (!connectionConfirmed) {
-          clearTimeout(connectTimeout);
-          startWebSpeechFallback(stream);
-        } else {
-          setIsRecording(false);
-          setStatus('idle');
-          setStatusMessage('Microphone ready');
-          stopTracksAndAudio();
-        }
-      };
-    } catch (wsErr) {
-      console.warn('Failed to open WebSocket, starting Web Speech fallback:', wsErr);
-      startWebSpeechFallback(stream);
-    }
+    connectTranscriptionSocket({
+      stream,
+      wsRef,
+      language,
+      audioContextRef,
+      analyserRef,
+      workletNodeRef,
+      scriptProcessorRef,
+      animFrameRef,
+      timerRef,
+      isRecordingRef,
+      setStatus,
+      setStatusMessage,
+      setEngine,
+      setInterimTranscript,
+      setFinalTranscript,
+      setAudioLevel,
+      setDuration,
+      setIsRecording,
+      setError,
+      startWebSpeechFallback,
+      stopTracksAndAudio
+    });
   }, [language, stopTracksAndAudio, startWebSpeechFallback]);
 
   return {
