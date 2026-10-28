@@ -223,9 +223,3 @@ export class SpeechService {
     this.errorCallbacks = [];
   }
 }
-
-export function createSpeechService() {
-  return new SpeechService();
-}
-
-export default SpeechService;

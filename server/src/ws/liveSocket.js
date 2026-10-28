@@ -195,5 +195,3 @@ export function setupLiveSocket(server) {
 
   return wss;
 }
-
-export default setupLiveSocket;

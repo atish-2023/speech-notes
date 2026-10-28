@@ -323,24 +323,9 @@ export function getDbStatus() {
 }
 
 /**
- * Returns true when a real DATABASE_URL is configured. In that mode the app
- * must never silently write to the in-memory store.
- */
-export function isDatabaseConfigured() {
-  return isRealDatabaseUrl;
-}
-
-/**
  * Returns true when the app is running in the ephemeral in-memory mode
  * (i.e. DATABASE_URL is empty/placeholder).
  */
 export function isUsingMemoryStore() {
   return allowMemoryFallback;
 }
-
-export default {
-  query,
-  getDbStatus,
-  isDatabaseConfigured,
-  isUsingMemoryStore
-};

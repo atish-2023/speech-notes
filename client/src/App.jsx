@@ -46,7 +46,6 @@ export default function App() {
     setLanguage,
     duration,
     error: liveError,
-    activeModel,
     engineNotice,
     audioLevel,
     startRecording,
@@ -285,7 +284,6 @@ export default function App() {
               setLanguage={setLanguage}
               duration={duration}
               error={liveError}
-              activeModel={activeModel}
               engineNotice={engineNotice}
               audioLevel={audioLevel}
               startRecording={startRecording}

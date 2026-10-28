@@ -17,7 +17,6 @@ export function Recorder({
   setLanguage,
   duration,
   error,
-  activeModel,
   engineNotice,
   audioLevel = 0,
   startRecording,

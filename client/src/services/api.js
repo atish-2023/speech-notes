@@ -56,22 +56,13 @@ export async function fetchTranscripts(search = '', page = 1, limit = 50) {
   const queryStr = params.toString() ? `?${params.toString()}` : '';
   const res = await fetch(`${API_BASE}/transcripts${queryStr}`);
   const result = await handleResponse(res);
-  
+
   // Normalize both paginated object { data: [...] } and flat array [...]
   if (result && Array.isArray(result.data)) {
     return result.data;
   }
   return Array.isArray(result) ? result : [];
 }
-
-// Backward compatibility alias
-export const fetchTranscriptions = fetchTranscripts;
-
-export async function fetchTranscriptById(id) {
-  const res = await fetch(`${API_BASE}/transcripts/${encodeURIComponent(id)}`);
-  return handleResponse(res);
-}
-export const fetchTranscriptionById = fetchTranscriptById;
 
 export async function createTranscript(data) {
   const payload = {
@@ -88,7 +79,6 @@ export async function createTranscript(data) {
   });
   return handleResponse(res);
 }
-export const createTranscription = createTranscript;
 
 export async function updateTranscript(id, data) {
   const payload = {
@@ -104,7 +94,6 @@ export async function updateTranscript(id, data) {
   });
   return handleResponse(res);
 }
-export const updateTranscription = updateTranscript;
 
 export async function deleteTranscript(id) {
   const res = await fetch(`${API_BASE}/transcripts/${encodeURIComponent(id)}`, {
@@ -112,4 +101,3 @@ export async function deleteTranscript(id) {
   });
   return handleResponse(res);
 }
-export const deleteTranscription = deleteTranscript;

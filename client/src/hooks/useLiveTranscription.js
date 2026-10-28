@@ -63,7 +63,6 @@ export function useLiveTranscription() {
   const [language, setLanguage] = useState('auto'); // 'auto' | 'en' | 'hi' | 'en-hi'
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState(null);
-  const [activeModel, setActiveModel] = useState('');
   const [engineNotice, setEngineNotice] = useState('');
   const [audioLevel, setAudioLevel] = useState(0); // 0 to 100 for visual live sound wave
 
@@ -231,7 +230,6 @@ export function useLiveTranscription() {
 
       recognition.start();
       setEngine('webspeech');
-      setActiveModel('Web Speech API (Browser Fallback)');
       setEngineNotice('Notice: Running on Web Speech API Fallback. Real-time Gemini Live WebSocket could not be reached.');
       setStatus('recording');
       setStatusMessage('Listening via Web Speech API fallback — speak now!');
@@ -346,7 +344,6 @@ export function useLiveTranscription() {
               setStatus('recording');
               setStatusMessage(`Live stream active (${data.model || 'gemini-3.5-transcribe-live'}) — speak now!`);
               setEngine('gemini');
-              if (data.model) setActiveModel(data.model);
 
               // Set up AudioContext with robust fallback
               try {
@@ -541,7 +538,6 @@ export function useLiveTranscription() {
     setLanguage,
     duration,
     error,
-    activeModel,
     engineNotice,
     audioLevel,
     startRecording,
