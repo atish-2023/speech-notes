@@ -1,5 +1,13 @@
 import { GoogleGenAI } from '@google/genai';
 
+// Gemini language codes per UI language option.
+const LANGUAGE_CODES = {
+  en: ['en-US', 'en'],
+  hi: ['hi-IN', 'hi'],
+  'en-hi': ['en-IN', 'hi-IN'],
+  hinglish: ['en-IN', 'hi-IN']
+};
+
 /**
  * SpeechService provides an abstraction layer over live speech-to-text.
  * Model: gemini-3.5-transcribe-live
@@ -152,11 +160,7 @@ export class SpeechService {
     });
 
     const lang = options.language || 'auto';
-    let languageCodes = [];
-    if (lang === 'en') languageCodes = ['en-US', 'en'];
-    else if (lang === 'hi') languageCodes = ['hi-IN', 'hi'];
-    else if (lang === 'en-hi' || lang === 'hinglish') languageCodes = ['en-IN', 'hi-IN'];
-
+    const languageCodes = LANGUAGE_CODES[lang] || [];
     const transcriptionConfig = languageCodes.length > 0 ? { languageCodes } : {};
 
     const modelName = 'gemini-3.5-transcribe-live';

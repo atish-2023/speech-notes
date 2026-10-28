@@ -182,19 +182,13 @@ export async function query(text, params = []) {
 }
 
 export function getDbStatus() {
-  let type = 'in-memory';
-  if (isConnected) {
-    type = 'neon-postgresql';
-  } else if (isRealDatabaseUrl) {
-    // Configured with a real connection string but not (yet) connected.
-    type = 'neon-postgresql';
-  }
+  // isConnected can only be true when a real DATABASE_URL is present, so the
+  // engine type is decided by the connection string alone.
   return {
     isConfigured: isRealDatabaseUrl,
-    isConnected: isConnected,
-    // 'neon-postgresql' when a real DATABASE_URL is present, otherwise 'in-memory'
-    type,
-    // True when transcripts are ephemeral and will be lost on restart
+    isConnected,
+    type: isRealDatabaseUrl ? 'neon-postgresql' : 'in-memory',
+    // True only when rows actually persist to Neon
     persistent: !allowMemoryFallback && isConnected,
     usingEphemeralMemory: allowMemoryFallback,
     lastError: isConnected ? null : connectionError
