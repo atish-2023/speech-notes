@@ -1,55 +1,36 @@
-// Shared presentation helpers for transcript cards and modals.
-// Kept separate from components so the history list, the view/edit modal and
-// the dashboard stats all format language badges and dates identically.
+// Shared presentation helpers for transcript cards, modals and dashboard stats.
+
+const LANGUAGE_BADGES = {
+  en: { label: 'English', className: 'english' },
+  english: { label: 'English', className: 'english' },
+  hi: { label: 'Hindi', className: 'hindi' },
+  hindi: { label: 'Hindi', className: 'hindi' },
+  'en-hi': { label: 'English + Hindi', className: 'hinglish' },
+  hinglish: { label: 'English + Hindi', className: 'hinglish' }
+};
+const DEFAULT_BADGE = { label: 'Auto Detect', className: 'multilingual' };
 
 export function getLanguageBadge(lang) {
-  const l = (lang || '').toLowerCase();
-  if (l === 'en' || l === 'english') {
-    return { label: 'English', className: 'english' };
-  }
-  if (l === 'hi' || l === 'hindi') {
-    return { label: 'Hindi', className: 'hindi' };
-  }
-  if (l === 'en-hi' || l === 'hinglish') {
-    return { label: 'English + Hindi', className: 'hinglish' };
-  }
-  if (l === 'auto') {
-    return { label: 'Auto Detect', className: 'multilingual' };
-  }
-  return { label: 'Auto Detect', className: 'multilingual' };
+  return LANGUAGE_BADGES[(lang || '').toLowerCase()] || DEFAULT_BADGE;
 }
 
 // "Oct 28, 2026 • 1:34 PM" - used by the history list and dashboard stat.
 export function formatDateTime(isoString) {
   if (!isoString) return '';
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    }) + ' • ' + d.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    });
-  } catch {
-    return isoString;
-  }
+  const d = new Date(isoString);
+  const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  return `${date} • ${time}`;
 }
 
-// Locale-aware full timestamp - used by the view/edit modal footer.
+// Locale-aware full timestamp - used by the view modal footer.
 export function formatFullDateTime(isoString) {
   if (!isoString) return '';
-  try {
-    return new Date(isoString).toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  } catch {
-    return isoString;
-  }
+  return new Date(isoString).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
 }

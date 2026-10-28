@@ -17,7 +17,7 @@ export function useTranscripts() {
     setListError(null);
     try {
       const data = await fetchTranscripts(search);
-      setTranscripts(Array.isArray(data) ? data : []);
+      setTranscripts(data);
     } catch (err) {
       setListError(err.message || 'Could not load saved transcripts.');
     } finally {

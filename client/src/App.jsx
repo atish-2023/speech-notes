@@ -4,7 +4,8 @@ import { useServerHealth } from './hooks/useServerHealth.js';
 import { useTranscripts } from './hooks/useTranscripts.js';
 import { Recorder } from './components/Recorder.jsx';
 import { TranscriptList } from './components/TranscriptList.jsx';
-import { TranscriptModal } from './components/TranscriptModal.jsx';
+import { TranscriptViewModal } from './components/TranscriptViewModal.jsx';
+import { TranscriptEditModal } from './components/TranscriptEditModal.jsx';
 import { ConfirmDelete } from './components/ConfirmDelete.jsx';
 import { formatDateTime } from './utils/transcriptFormat.js';
 import {
@@ -77,13 +78,9 @@ export default function App() {
   };
 
   const handleUpdateTranscript = async (id, data) => {
-    try {
-      const updated = await updateTranscript(id, data);
-      showNotification(`Note "${updated.title}" updated in PostgreSQL.`);
-      await loadTranscripts(searchQuery);
-    } catch (err) {
-      throw err;
-    }
+    const updated = await updateTranscript(id, data);
+    showNotification(`Note "${updated.title}" updated in PostgreSQL.`);
+    await loadTranscripts(searchQuery);
   };
 
   const handleDeleteTranscript = async (id) => {
@@ -101,8 +98,9 @@ export default function App() {
   };
 
   // Compute stats
-  const totalTranscriptsCount = transcripts.length;
-  const lastRecordedTime = transcripts[0]?.created_at ? formatDateTime(transcripts[0].created_at) : 'None yet';
+  const lastRecordedTime = transcripts[0]?.created_at
+    ? formatDateTime(transcripts[0].created_at)
+    : 'None yet';
 
   // Mobile bottom-navigation: reuse the existing activeTab state and scroll to
   // the matching section. This is presentational only (no data/API logic).
@@ -271,7 +269,7 @@ export default function App() {
                     </svg>
                   </div>
                   <div className="stat-label">Total Transcripts</div>
-                  <div className="stat-value">{totalTranscriptsCount}</div>
+                  <div className="stat-value">{transcripts.length}</div>
                 </div>
 
                 {/* 2. Languages Detected */}
@@ -359,13 +357,20 @@ export default function App() {
       </nav>
 
       {/* Modals */}
-      <TranscriptModal
-        isOpen={Boolean(activeModal)}
-        mode={activeModal?.mode}
-        item={activeModal?.item}
-        onClose={() => setActiveModal(null)}
-        onSave={handleUpdateTranscript}
-      />
+      {activeModal?.mode === 'edit' ? (
+        <TranscriptEditModal
+          isOpen
+          item={activeModal.item}
+          onClose={() => setActiveModal(null)}
+          onSave={handleUpdateTranscript}
+        />
+      ) : (
+        <TranscriptViewModal
+          isOpen={Boolean(activeModal)}
+          item={activeModal?.item}
+          onClose={() => setActiveModal(null)}
+        />
+      )}
 
       <ConfirmDelete
         isOpen={Boolean(deleteTarget)}

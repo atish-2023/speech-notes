@@ -6,6 +6,11 @@ function formatTimer(seconds) {
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
+const RECORD_BUTTON_LABEL = {
+  connecting: 'Connecting...',
+  requesting: 'Requesting Mic...'
+};
+
 export function Recorder({
   isRecording,
   status,
@@ -121,7 +126,7 @@ export function Recorder({
                 className="mic-hero-ring"
                 style={{
                   transform: `scale(${1 + (audioLevel / 100) * 0.4})`,
-                  borderColor: isRecording ? '#ef4444' : '#059669'
+                  borderColor: '#ef4444'
                 }}
               />
             )}
@@ -168,11 +173,7 @@ export function Recorder({
                 <line x1="12" y1="19" x2="12" y2="23" />
                 <line x1="8" y1="23" x2="16" y2="23" />
               </svg>
-              {status === 'connecting'
-                ? 'Connecting...'
-                : status === 'requesting'
-                ? 'Requesting Mic...'
-                : 'Start Speaking'}
+              {RECORD_BUTTON_LABEL[status] || 'Start Speaking'}
             </button>
 
             <button

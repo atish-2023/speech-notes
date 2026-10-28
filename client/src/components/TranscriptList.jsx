@@ -10,7 +10,7 @@ export function TranscriptList({
   onEdit,
   onDelete
 }) {
-  const items = Array.isArray(transcriptions) ? transcriptions : [];
+  const items = transcriptions || [];
 
   return (
     <aside className="right-sidebar" id="history-section">
