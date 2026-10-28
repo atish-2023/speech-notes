@@ -1,37 +1,4 @@
-function formatDateTime(isoString) {
-  if (!isoString) return '';
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    }) + ' • ' + d.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    });
-  } catch {
-    return isoString;
-  }
-}
-
-function getLanguageBadge(lang) {
-  const l = (lang || '').toLowerCase();
-  if (l === 'en' || l === 'english') {
-    return { label: 'English', className: 'english' };
-  }
-  if (l === 'hi' || l === 'hindi') {
-    return { label: 'Hindi', className: 'hindi' };
-  }
-  if (l === 'en-hi' || l === 'hinglish') {
-    return { label: 'English + Hindi', className: 'hinglish' };
-  }
-  if (l === 'auto') {
-    return { label: 'Auto Detect', className: 'multilingual' };
-  }
-  return { label: 'Auto Detect', className: 'multilingual' };
-}
+import { formatDateTime, getLanguageBadge } from '../utils/transcriptFormat.js';
 
 export function TranscriptList({
   transcriptions,

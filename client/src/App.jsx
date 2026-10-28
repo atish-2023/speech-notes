@@ -4,6 +4,7 @@ import { Recorder } from './components/Recorder.jsx';
 import { TranscriptList } from './components/TranscriptList.jsx';
 import { TranscriptModal } from './components/TranscriptModal.jsx';
 import { ConfirmDelete } from './components/ConfirmDelete.jsx';
+import { formatDateTime } from './utils/transcriptFormat.js';
 import {
   checkHealth,
   fetchTranscripts,
@@ -12,24 +13,6 @@ import {
   deleteTranscript
 } from './services/api.js';
 import './styles.css';
-
-function formatTimestamp(isoString) {
-  if (!isoString) return 'None yet';
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    }) + ' • ' + d.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    });
-  } catch {
-    return isoString;
-  }
-}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -155,7 +138,7 @@ export default function App() {
 
   // Compute stats
   const totalTranscriptsCount = transcripts.length;
-  const lastRecordedTime = transcripts[0]?.created_at ? formatTimestamp(transcripts[0].created_at) : 'None yet';
+  const lastRecordedTime = transcripts[0]?.created_at ? formatDateTime(transcripts[0].created_at) : 'None yet';
 
   // Mobile bottom-navigation: reuse the existing activeTab state and scroll to
   // the matching section. This is presentational only (no data/API logic).

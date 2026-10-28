@@ -1,36 +1,5 @@
 import { useState, useEffect } from 'react';
-
-function formatDateTime(isoString) {
-  if (!isoString) return '';
-  try {
-    return new Date(isoString).toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  } catch {
-    return isoString;
-  }
-}
-
-export function getLanguageBadge(lang) {
-  const l = (lang || '').toLowerCase();
-  if (l === 'en' || l === 'english') {
-    return { label: 'English', className: 'english' };
-  }
-  if (l === 'hi' || l === 'hindi') {
-    return { label: 'Hindi', className: 'hindi' };
-  }
-  if (l === 'en-hi' || l === 'hinglish') {
-    return { label: 'English + Hindi', className: 'hinglish' };
-  }
-  if (l === 'auto') {
-    return { label: 'Auto Detect', className: 'multilingual' };
-  }
-  return { label: 'Auto Detect', className: 'multilingual' };
-}
+import { formatFullDateTime, getLanguageBadge } from '../utils/transcriptFormat.js';
 
 export function TranscriptModal({
   isOpen,
@@ -178,11 +147,11 @@ export function TranscriptModal({
                   {languageBadge.label}
                 </span>
                 <span className="modal-meta-date">
-                  Created: {formatDateTime(item.created_at)}
+                  Created: {formatFullDateTime(item.created_at)}
                 </span>
                 {item.updated_at && item.updated_at !== item.created_at && (
                   <span className="modal-meta-date">
-                    • Updated: {formatDateTime(item.updated_at)}
+                    • Updated: {formatFullDateTime(item.updated_at)}
                   </span>
                 )}
               </div>
