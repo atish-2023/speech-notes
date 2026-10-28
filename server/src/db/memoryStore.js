@@ -34,7 +34,7 @@ export function runMemoryQuery(text, params = []) {
         (t.content && t.content.toLowerCase().includes(term))
       );
     }
-    return { rows: [{ count: String(list.length) }], rowCount: 1 };
+    return { rows: [{ total: String(list.length) }], rowCount: 1 };
   }
 
   // SELECT ... FROM transcripts / transcriptions

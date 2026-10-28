@@ -36,18 +36,20 @@ export async function getTranscripts(req, res, next) {
       params.push(`%${search.trim()}%`);
     }
 
-    // Total count query
+    // Total count query (the count is always aliased as "total").
     const countSql = `SELECT COUNT(*) AS total ${baseSql}`;
     const countResult = await query(countSql, params);
-    const totalCount = parseInt(countResult.rows[0]?.total ?? countResult.rows[0]?.count ?? 0, 10);
+    const totalCount = parseInt(countResult.rows[0]?.total ?? 0, 10);
 
-    // Data query
+    // Data query: same columns, newest first.
     let dataSql = `SELECT id, title, content, content AS transcript_text, language, duration_seconds, created_at, updated_at ${baseSql} ORDER BY created_at DESC`;
-    
-    // Append pagination parameters
-    params.push(limitNum);
-    params.push(offset);
-    dataSql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+
+    // Append LIMIT/OFFSET using explicit 1-based placeholder indices so the
+    // generated SQL stays obvious ($1 may already be taken by the search term).
+    const limitParamIndex = params.length + 1;
+    const offsetParamIndex = params.length + 2;
+    params.push(limitNum, offset);
+    dataSql += ` LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`;
 
     const result = await query(dataSql, params);
 
