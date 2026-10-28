@@ -1,0 +1,19 @@
+{
+  "name": "speech-notes-server",
+  "version": "1.0.0",
+  "description": "Backend API and WebSocket streaming service for Speech Notes",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "pg": "^8.13.3",
+    "ws": "^8.18.1"
+  }
+}
