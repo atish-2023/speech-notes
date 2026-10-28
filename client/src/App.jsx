@@ -1,13 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import { useLiveTranscription } from './hooks/useLiveTranscription.js';
+import { useServerHealth } from './hooks/useServerHealth.js';
+import { useTranscripts } from './hooks/useTranscripts.js';
 import { Recorder } from './components/Recorder.jsx';
 import { TranscriptList } from './components/TranscriptList.jsx';
 import { TranscriptModal } from './components/TranscriptModal.jsx';
 import { ConfirmDelete } from './components/ConfirmDelete.jsx';
 import { formatDateTime } from './utils/transcriptFormat.js';
 import {
-  checkHealth,
-  fetchTranscripts,
   createTranscript,
   updateTranscript,
   deleteTranscript
@@ -38,59 +38,23 @@ export default function App() {
     setFinalTranscript
   } = useLiveTranscription();
 
-  // Database / CRUD state
-  const [transcripts, setTranscripts] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isLoadingList, setIsLoadingList] = useState(true);
-  const [listError, setListError] = useState(null);
-  const [serverHealth, setServerHealth] = useState({ online: false, db: null });
+  // Database / CRUD state. Data fetching lives in useTranscripts() and the
+  // health ping in useServerHealth(); App only composes the layout around them.
+  const serverHealth = useServerHealth();
+  const {
+    transcripts,
+    searchQuery,
+    setSearchQuery,
+    isLoadingList,
+    listError,
+    loadTranscripts
+  } = useTranscripts();
   const [notification, setNotification] = useState(null);
 
   // Modals state
   const [activeModal, setActiveModal] = useState(null); // { mode: 'view' | 'edit', item }
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
-
-  // Ping server health
-  const pingHealth = useCallback(async () => {
-    try {
-      const data = await checkHealth();
-      setServerHealth({
-        online: data.status === 'ok',
-        db: data.database?.type || 'neon-postgresql'
-      });
-    } catch {
-      setServerHealth({ online: false, db: null });
-    }
-  }, []);
-
-  useEffect(() => {
-    pingHealth();
-    const interval = setInterval(pingHealth, 30000);
-    return () => clearInterval(interval);
-  }, [pingHealth]);
-
-  // Load history list with optional search
-  const loadTranscripts = useCallback(async (search = '') => {
-    setIsLoadingList(true);
-    setListError(null);
-    try {
-      const data = await fetchTranscripts(search);
-      setTranscripts(Array.isArray(data) ? data : []);
-    } catch (err) {
-      setListError(err.message || 'Could not load saved transcripts.');
-    } finally {
-      setIsLoadingList(false);
-    }
-  }, []);
-
-  // Initial fetch and search debouncing
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      loadTranscripts(searchQuery);
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [searchQuery, loadTranscripts]);
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
