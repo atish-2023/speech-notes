@@ -143,9 +143,7 @@ export function setupLiveSocket(server) {
           sendJson({ type: 'status', status: 'connecting' });
 
           try {
-            console.log(`Starting Gemini Live session for language hint: "${data.language || 'auto'}"...`);
             const { model } = await speechService.startSession({ language: data.language || 'auto' });
-            console.log(`Gemini Live session successfully established with model: ${model}`);
 
             sendJson({
               type: 'status',

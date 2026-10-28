@@ -161,10 +161,8 @@ export class SpeechService {
 
     const modelName = 'gemini-3.5-transcribe-live';
     try {
-      console.log(`Attempting Gemini Live connection with model: ${modelName}...`);
       this.session = await this._connectModelWithTimeout(ai, modelName, transcriptionConfig, 7000);
       this.isOpen = true;
-      console.log(`Connected to Gemini Live model: ${modelName}`);
       return { model: modelName };
     } catch (err) {
       this.emitError(err);
